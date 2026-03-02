@@ -1,0 +1,59 @@
+| makeresults count=420
+| streamstats count as n
+| eval base=relative_time(now(),"@d")
+| eval user=case(n<=260,"alice", n<=360,"bob", true(),"jdoe")
+| eval event_type=case(n%3=0,"auth", n%3=1,"file", true(),"proxy")
+| eval _time=case(user="jdoe" AND n>=380, base + 23*3600 + (n%1200),
+                  true(), base + 10*3600 + (n%1800))
+| eval device=case(user="jdoe" AND n>=380,"HR-LAPTOP-9",
+                   user="jdoe","ENG-LAPTOP-2",
+                   user="alice","FIN-PC-1",
+                   true(),"OPS-PC-3")
+| eval src_ip=case(user="jdoe" AND n>=380,"10.10.50.77", true(),"10.10.10.12")
+| eval auth_result=case(event_type="auth" AND user="jdoe" AND n>=380 AND n<=392,"fail",
+                        event_type="auth","success",
+                        true(),null())
+| eval file_path=case(event_type="file" AND user="jdoe" AND n>=380,"\\fileserver\HR\Compensation\salary_export.xlsx",
+                      event_type="file","\\fileserver\Public\docs\file.txt",
+                      true(),null())
+| eval dest_domain=case(event_type="proxy" AND user="jdoe" AND n>=380,"dropbox.com",
+                        event_type="proxy","microsoft.com",
+                        true(),null())
+| eval bytes_out=case(event_type="proxy" AND user="jdoe" AND n>=380, 1400000000 + (n%200000000),
+                      event_type="proxy", 15000000 + (n%8000000),
+                      true(),null())
+| eval hour=tonumber(strftime(_time,"%H"))
+| eval after_hours=if(hour>=22 OR hour<=5,1,0)
+| eval sensitive_file=if(event_type="file" AND like(file_path,"%\\HR\\%"),1,0)
+| eval auth_fail=if(event_type="auth" AND auth_result="fail",1,0)
+| bin _time span=30m
+| stats sum(auth_fail) as auth_failures
+        max(after_hours) as after_hours
+        dc(device) as device_count
+        values(device) as devices
+        sum(sensitive_file) as sensitive_file_hits
+        values(file_path) as sensitive_files
+        sum(bytes_out) as bytes_out
+        values(dest_domain) as dest_domains
+  by user _time
+| eventstats avg(bytes_out) as avg_bytes stdev(bytes_out) as sd_bytes by user
+| eval z=if(sd_bytes=0,0,(bytes_out-avg_bytes)/sd_bytes)
+| eval exfil_flag=if(z>=3 OR bytes_out>=500000000,1,0)
+| eval new_device_flag=if(device_count>=2 OR mvfind(devices,"HR-LAPTOP-9")>=0,1,0)
+| eval sensitive_flag=if(sensitive_file_hits>=5,1,0)
+| eval auth_fail_flag=if(auth_failures>=5,1,0)
+| eval risk=(new_device_flag*25) + (sensitive_flag*30) + (exfil_flag*40) + (after_hours*15) + (auth_fail_flag*10)
+| where risk>=50
+| eval indicators=mvappend(
+    if(new_device_flag=1,"New device",""),
+    if(sensitive_flag=1,"Sensitive file access",""),
+    if(exfil_flag=1,"Data movement anomaly",""),
+    if(after_hours=1,"After-hours",""),
+    if(auth_fail_flag=1,"Auth failures","")
+  )
+| eval indicators=mvfilter(indicators!="")
+| eval recommended_action=case(risk>=80,"Escalate for investigation",
+                               risk>=50,"Limited inquiry (triage)",
+                               true(),"Monitor")
+| table _time user risk auth_failures after_hours devices sensitive_files bytes_out z dest_domains indicators recommended_action
+| sort -risk

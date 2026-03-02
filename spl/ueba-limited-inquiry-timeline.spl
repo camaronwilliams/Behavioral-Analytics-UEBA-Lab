@@ -1,0 +1,32 @@
+| makeresults count=420
+| streamstats count as n
+| eval base=relative_time(now(),"@d")
+| eval user=case(n<=260,"alice", n<=360,"bob", true(),"jdoe")
+| eval event_type=case(n%3=0,"auth", n%3=1,"file", true(),"proxy")
+| eval _time=case(user="jdoe" AND n>=380, base + 23*3600 + (n%1200),
+                  true(), base + 10*3600 + (n%1800))
+| eval device=case(user="jdoe" AND n>=380,"HR-LAPTOP-9",
+                   user="jdoe","ENG-LAPTOP-2",
+                   user="alice","FIN-PC-1",
+                   true(),"OPS-PC-3")
+| eval src_ip=case(user="jdoe" AND n>=380,"10.10.50.77", true(),"10.10.10.12")
+| eval auth_result=case(event_type="auth" AND user="jdoe" AND n>=380 AND n<=392,"fail",
+                        event_type="auth","success",
+                        true(),null())
+| eval file_path=case(event_type="file" AND user="jdoe" AND n>=380,"\\fileserver\HR\Compensation\salary_export.xlsx",
+                      event_type="file","\\fileserver\Public\docs\file.txt",
+                      true(),null())
+| eval dest_domain=case(event_type="proxy" AND user="jdoe" AND n>=380,"dropbox.com",
+                        event_type="proxy","microsoft.com",
+                        true(),null())
+| eval bytes_out=case(event_type="proxy" AND user="jdoe" AND n>=380, 1400000000 + (n%200000000),
+                      event_type="proxy", 15000000 + (n%8000000),
+                      true(),null())
+| search user="jdoe"
+| eval activity=case(event_type="auth" AND auth_result="fail","Auth Failure",
+                     event_type="auth","Auth Success",
+                     event_type="file","File Access",
+                     event_type="proxy","Outbound Transfer",
+                     true(),"Other")
+| table _time user event_type activity device src_ip file_path dest_domain bytes_out auth_result
+| sort _time
